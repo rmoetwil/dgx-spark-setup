@@ -1,0 +1,10 @@
+[project]
+name = "dgx-spark-setup"
+version = "0.1.0"
+description = "Some simple python scripts for testing llm server installations"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "openai>=2.20.0",
+    "python-dotenv>=1.2.1",
+]
