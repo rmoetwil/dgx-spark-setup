@@ -11,10 +11,12 @@ In short:
 - Configure and build the CUDA-enabled version (GPU Mode)
 
 ```
+# Clone repo
 cd ~
 git clone https://github.com/ggerganov/llama.cpp.git
 cd ~/llama.cpp
 
+# Setup build files
 mkdir -p build-gpu
 cd build-gpu
 cmake .. \
@@ -25,6 +27,24 @@ cmake .. \
 	-DCMAKE_C_COMPILER=gcc \
 	-DCMAKE_CXX_COMPILER=g++ \
 	-DCMAKE_CUDA_COMPILER=nvcc
+
+# Build
+make -j"$(nproc)"
+
+# Verify
+ldd bin/llama-cli | grep cuda
+
+./bin/llama-server --version
+
+./bin/llama-cli \
+	-m ~/data/ai/models/TheBloke/TinyLlama-1.1B/tinyllama-1.1b-chat-v1.0.Q8_0.gguf \
+	-ngl 32 \
+	-t 16 \
+	-p "Explain the advantages of the Armv9 architecture."
+
+nvitop
+
+
 ```
 
 Optional changes:
