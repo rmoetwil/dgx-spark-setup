@@ -3,7 +3,7 @@
 
 ## Build
 
-For this follow this [documentation](https://learn.arm.com/learning-paths/laptops-and-desktops/dgx_spark_llamacpp/2_gb10_llamacpp_gpu/)
+For this follow this [documentation](https://learn.arm.com/learning-paths/laptops-and-desktops/dgx_spark_llamacpp/2_gb10_llamacpp_gpu/).
 
 
 In short:
