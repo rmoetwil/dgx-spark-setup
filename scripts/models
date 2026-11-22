@@ -20,8 +20,13 @@ Usage: models <command> [args]
                                   type hf = in an HF cache, local = plain folder
   where <repo>                    print the disk holding <repo>: internal or external
   env <repo>                      print 'export HF_HOME=...' for <repo>; use with eval
-  get <repo> [--external] [...]   hf download into the internal (default) or external cache;
-                                  extra arguments go to 'hf download'
+  get <repo> [--internal|--external] [...]
+                                  hf download into the active cache (see 'use'), or the one
+                                  given; extra arguments go to 'hf download'
+  use [internal|external]         print the shell code that switches HF_HOME; without an
+                                  argument, show the active cache. Use through 'hfuse'
+  shell-init                      print the hfuse function and prompt marker for ~/.bashrc:
+                                    eval "$(models shell-init)"
   run <repo> -- <command...>      run <command> with HF_HOME set to the cache holding <repo>
   mv <repo> internal|external     move <repo> to the other cache: copy, verify, then delete
                                   the original; stop anything using the model first
@@ -41,6 +46,18 @@ hf_home() {
       [ -d "$EXTERNAL_HF" ] || die "$EXTERNAL_HF not found; is the external disk mounted?"
       echo "$EXTERNAL_HF" ;;
     *) die "unknown disk '$1'; use internal or external" ;;
+  esac
+}
+
+# The cache hf uses when HF_HOME is not set.
+HF_DEFAULT=${XDG_CACHE_HOME:-$HOME/.cache}/huggingface
+
+# The disk the current HF_HOME points at: internal, external, or other.
+active_disk() {
+  case "${HF_HOME:-$HF_DEFAULT}" in
+    "$INTERNAL_HF") echo internal ;;
+    "$EXTERNAL_HF") echo external ;;
+    *) echo other ;;
   esac
 }
 
@@ -118,10 +135,16 @@ cmd_env() {
 
 cmd_get() {
   check_repo "${1:-}"
-  local repo=$1 disk=internal; shift
+  local repo=$1 disk; shift
+  # Default to the active cache, so 'hfuse external' also steers 'models get'.
+  disk=$(active_disk); [ "$disk" = other ] && die "HF_HOME=$HF_HOME is neither cache; pass --internal or --external"
   local args=()
   for a in "$@"; do
-    if [ "$a" = --external ]; then disk=external; else args+=("$a"); fi
+    case "$a" in
+      --external) disk=external ;;
+      --internal) disk=internal ;;
+      *) args+=("$a") ;;
+    esac
   done
   local other; other=$(locate "$repo" | grep -vx "$disk" || true)
   [ -z "$other" ] || die "$repo is already on the $other disk; use 'models mv' to move it"
@@ -210,6 +233,30 @@ cmd_mv() {
   echo "models: $repo is now on the $to disk" >&2
 }
 
+# Stdout is meant for eval, so all messages go to stderr.
+cmd_use() {
+  local to=${1:-}
+  if [ -z "$to" ]; then
+    echo "models: active cache: $(active_disk) (${HF_HOME:-$HF_DEFAULT})" >&2
+    return 0
+  fi
+  local home; home=$(hf_home "$to")
+  if [ "$home" = "$HF_DEFAULT" ]; then
+    echo "unset HF_HOME"   # back to the default, as in a fresh shell
+  else
+    printf 'export HF_HOME=%q\n' "$home"
+  fi
+  echo "models: HF_HOME now points at the $to cache ($home)" >&2
+}
+
+cmd_shell_init() {
+  cat <<EOF
+hfuse() { eval "\$(models use "\$@")"; }
+__models_ps1() { [ "\${HF_HOME:-}" = $(printf '%q' "$EXTERNAL_HF") ] && printf '[hf:ext] '; return 0; }
+case "\${PS1:-}" in *__models_ps1*) ;; *) PS1='\$(__models_ps1)'"\${PS1:-}" ;; esac
+EOF
+}
+
 cmd=${1:-}; [ $# -gt 0 ] && shift
 case "$cmd" in
   ls) cmd_ls ;;
@@ -218,6 +265,8 @@ case "$cmd" in
   get) cmd_get "$@" ;;
   run) cmd_run "$@" ;;
   mv) cmd_mv "$@" ;;
+  use) cmd_use "$@" ;;
+  shell-init) cmd_shell_init ;;
   -h|--help|help|'') usage ;;
   *) usage >&2; exit 1 ;;
 esac

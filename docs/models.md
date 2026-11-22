@@ -31,16 +31,45 @@ Link the script into `~/.local/bin` once, from the root of this repository:
 ln -s "$PWD/scripts/models" ~/.local/bin/models
 ```
 
+To switch caches with `hfuse` (see below), also add this line to `~/.bashrc`:
+
+```bash
+command -v models >/dev/null && eval "$(models shell-init)"
+```
+
 ## Commands
 
 ```bash
-models ls                             # every model on both disks
-models where <repo>                   # internal or external
-models get <repo> [--external]        # hf download into the internal (default) or external cache
-models run <repo> -- <command...>     # run <command> with HF_HOME set to the cache holding <repo>
-eval "$(models env <repo>)"           # set HF_HOME in the current shell
-models mv <repo> internal|external    # move to the other cache: copy, verify, then delete
+models ls                                  # every model on both disks
+models where <repo>                        # internal or external
+models get <repo> [--internal|--external]  # hf download into the active cache, or the one given
+models run <repo> -- <command...>          # run <command> with HF_HOME set to the cache holding <repo>
+eval "$(models env <repo>)"                # set HF_HOME in the current shell to the cache holding <repo>
+models mv <repo> internal|external         # move to the other cache: copy, verify, then delete
+hfuse [internal|external]                  # switch HF_HOME in the current shell; no argument shows the active cache
 ```
+
+## Switching the cache for other tools
+
+Tools such as `hf`, vLLM and spark-vllm-docker do not know the `models` script; they only read `HF_HOME`.
+`hfuse` switches `HF_HOME` in the current shell, so those tools follow:
+
+```bash
+hfuse external                 # HF_HOME=/mnt/ai-data/huggingface
+hf cache ls                    # now lists the external cache
+hfuse internal                 # unsets HF_HOME, back to ~/.cache/huggingface
+```
+
+While the external cache is active, the prompt starts with `[hf:ext]`.
+The switch only lasts for that shell, so watch the prompt before downloading.
+For a single command, a one-off is safer, because nothing stays switched:
+
+```bash
+HF_HOME=/mnt/ai-data/huggingface hf cache ls
+```
+
+`hfuse` is a shell function, because a script cannot change the environment of the shell that started it.
+It runs `models use`, which prints the `export` or `unset` line.
 
 `<repo>` is a Hugging Face repo ID, such as `Qwen/Qwen3-Coder-Next-FP8`.
 In `models ls`, type `hf` means the model is in an HF cache and type `local` means it is a plain folder.
@@ -62,6 +91,16 @@ Download only the file you need, because a GGUF repo usually holds every quantiz
 hf download ggml-org/gpt-oss-20b-GGUF gpt-oss-20b-MXFP4.gguf \
   --local-dir /mnt/ai-data/models/ggml-org/gpt-oss-20b-GGUF
 llama-server -m /mnt/ai-data/models/ggml-org/gpt-oss-20b-GGUF/gpt-oss-20b-MXFP4.gguf
+```
+
+## Deleting models
+
+Newer `hf` versions keep large files in a store shared by all models, `hub/blobs/<xx>/<sha256>`, and link to them from the model folder.
+Deleting a model folder with `rm -rf` leaves those shared files behind, so delete through `hf` instead:
+
+```bash
+hf cache rm model/<repo>       # add HF_HOME=/mnt/ai-data/huggingface for the external cache
+hf cache prune                 # remove leftovers, such as shared files no model uses
 ```
 
 ## Moving models
