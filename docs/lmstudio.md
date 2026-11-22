@@ -17,10 +17,10 @@ The launcher itself never has to be edited.
 
 ## Install the script
 
-Link the script into `~/.local/bin` once:
+Link the script into `~/.local/bin` once, from the root of this repository:
 
 ```bash
-ln -s ~/data/github/rmoetwil/dgx-spark-setup/scripts/lmstudio-upgrade.sh ~/.local/bin/lmstudio-upgrade
+ln -s "$PWD/scripts/lmstudio-upgrade.sh" ~/.local/bin/lmstudio-upgrade
 ```
 
 ## Upgrade

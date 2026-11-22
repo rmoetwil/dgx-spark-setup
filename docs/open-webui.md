@@ -8,6 +8,9 @@ After setup make the following changes to be able to use Ollama externally.
 - Make sure Ollama accepts external connections.
 - (optionally) Set Auth to none in the Open WebUI `admin->settings->connections` Manage Ollama API Connections.
 
+> **Warning:** with `OLLAMA_HOST=0.0.0.0` and Auth set to none, anyone who can reach the machine can use Ollama.
+> Only do this on a trusted network, and never expose port 11434 to the internet.
+
 Modified NVidia Sync script:
 ```
 #!/usr/bin/env bash
@@ -41,7 +44,7 @@ else
     # Not present: create and start it.
     echo "Creating and starting ${NAME}..."
     docker run -d -p 12000:8080 -p 11434:11434 --gpus=all \
-      -o OLLAMA_HOST=0.0.0.0
+      -e OLLAMA_HOST=0.0.0.0 \
       -v open-webui:/app/backend/data \
       -v open-webui-ollama:/root/.ollama \
       --name "${NAME}" "${IMAGE}" >/dev/null
