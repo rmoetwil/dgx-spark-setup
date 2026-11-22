@@ -46,6 +46,17 @@ hf_home() {
 
 repo_dir() { echo "$1/hub/models--${2//\//--}"; }   # Qwen/X -> <cache>/hub/models--Qwen--X
 
+# Newer hf versions keep large files in a store shared by all models, <cache>/hub/blobs/<xx>/<sha256>;
+# the model's own blobs/ folder then holds a symlink ../../blobs/<xx>/<sha256> to it.
+# Print those shared files, relative to <cache>/hub, for the model folder $1.
+shared_blobs() {
+  [ -d "$1/blobs" ] || return 0
+  find "$1/blobs" -type l -printf '%l\n' | sed -n 's|^\.\./\.\./\(blobs/.*\)$|\1|p' | sort -u
+}
+
+# Size of a model, following the symlinks into the shared store.
+model_size() { du -shL "$1/snapshots" 2>/dev/null | cut -f1; }
+
 check_repo() { [[ "${1:-}" == */* ]] || die "expected a repo ID like org/name, got '${1:-}'"; }
 
 # Print every disk that holds <repo>, one per line.
@@ -75,7 +86,7 @@ cmd_ls() {
     for dir in "$cache"/hub/models--*/; do
       [ -d "$dir" ] || continue
       name=${dir%/}; name=${name##*/models--}; name=${name/--//}
-      printf '%-9s %-5s %6s  %s\n' "$disk" hf "$(du -sh "$dir" 2>/dev/null | cut -f1)" "$name"
+      printf '%-9s %-5s %6s  %s\n' "$disk" hf "$(model_size "${dir%/}")" "$name"
     done
   done
   local root
@@ -143,30 +154,59 @@ cmd_mv() {
   [ "$(wc -l <<<"$found")" -eq 1 ] || die "$repo is on both disks; delete one copy by hand first"
   [ "$found" != "$to" ] || die "$repo is already on the $to disk"
 
-  local src dst
-  src=$(repo_dir "$(hf_home "$found")" "$repo")
-  dst=$(repo_dir "$(hf_home "$to")" "$repo")
+  local src_home dst_home src dst src_hub dst_hub
+  src_home=$(hf_home "$found"); dst_home=$(hf_home "$to")
+  src=$(repo_dir "$src_home" "$repo"); dst=$(repo_dir "$dst_home" "$repo")
+  src_hub=$src_home/hub; dst_hub=$dst_home/hub
+  local shared; shared=$(shared_blobs "$src")
 
   # Check up front that the original can be deleted; containers download as root.
-  if [ -n "$(find "$src" ! -user "$(id -un)" -print -quit)" ]; then
-    die "$src contains files not owned by you; first run: sudo chown -R $(id -un): $src"
+  local me b; me=$(id -un)
+  if [ -n "$(find "$src" ! -user "$me" -print -quit)" ]; then
+    die "$src contains files not owned by you; first run: sudo chown -R $me: $src_hub"
   fi
+  while IFS= read -r b; do
+    [ -z "$b" ] || [ -O "$src_hub/$b" ] || die "$src_hub/$b is not owned by you; first run: sudo chown -R $me: $src_hub"
+  done <<<"$shared"
+
+  # Size including the shared files the model links to.
   local need avail
-  need=$(du -sb "$src" | cut -f1)
-  mkdir -p "$(dirname "$dst")"
-  avail=$(df --output=avail -B1 "$(dirname "$dst")" | tail -1)
+  need=$(du -sbL "$src/snapshots" | cut -f1)
+  mkdir -p "$dst_hub"
+  avail=$(df --output=avail -B1 "$dst_hub" | tail -1)
   [ "$need" -lt "$avail" ] || die "not enough space on $to: need $need bytes, $avail available"
 
-  echo "models: copying $repo from $found to $to ($(du -sh "$src" | cut -f1))" >&2
-  trap 'echo "models: failed; removing partial copy $dst" >&2; rm -rf "$dst"' ERR
+  echo "models: copying $repo from $found to $to ($(model_size "$src"))" >&2
+  local copied=()   # shared files this run added to the destination, for cleanup on failure
+  trap 'echo "models: failed; removing partial copy $dst" >&2; rm -rf "$dst"; for b in "${copied[@]}"; do rm -f "$dst_hub/$b"; done' ERR
   rsync -a "$src/" "$dst/"
+  while IFS= read -r b; do
+    [ -n "$b" ] || continue
+    [ -e "$dst_hub/$b" ] && continue   # content-addressed: same name means same content
+    mkdir -p "$(dirname "$dst_hub/$b")"
+    copied+=("$b")
+    rsync -a "$src_hub/$b" "$dst_hub/$b"
+  done <<<"$shared"
 
   echo "models: verifying checksums" >&2
-  local diffs; diffs=$(rsync -anc --itemize-changes "$src/" "$dst/" | grep -v '^\.d' || true)
+  local broken diffs
+  broken=$(find -L "$dst/snapshots" -type l)   # symlinks that do not resolve
+  [ -z "$broken" ] || { echo "models: broken links in copy:" >&2; echo "$broken" >&2; false; }
+  # cmp follows symlinks on both sides, so it compares the real file contents.
+  diffs=$(cd "$src/snapshots" && find . \( -type f -o -type l \) -print | while IFS= read -r f; do
+    cmp -s "$f" "$dst/snapshots/$f" || echo "differs or missing: $f"
+  done)
   [ -z "$diffs" ] || { echo "$diffs" >&2; false; }
   trap - ERR
 
-  rm -rf "$src" "$(dirname "$src")/.locks/models--${repo//\//--}"
+  rm -rf "$src" "$src_hub/.locks/models--${repo//\//--}"
+  # Delete shared files from the source only when no other model there links to them.
+  while IFS= read -r b; do
+    [ -n "$b" ] || continue
+    if [ -z "$(find "$src_hub" -path "$src_hub/blobs" -prune -o -type l -lname "*/$b" -print -quit)" ]; then
+      rm -f "$src_hub/$b"
+    fi
+  done <<<"$shared"
   echo "models: $repo is now on the $to disk" >&2
 }
 
