@@ -1,0 +1,50 @@
+# Smoke test: checks that promptfoo, llama-swap and two local models work together.
+# Run from this folder with:  promptfoo eval -j 1   and look at the results with:  promptfoo view
+# The URL points at llama-swap on the same machine; change apiBaseUrl to run it from another machine.
+description: Smoke test of promptfoo with llama-swap
+
+providers:
+  - id: openai:chat:llama3-8b
+    label: llama3-8b (llama.cpp)
+    config: &llama-swap
+      apiBaseUrl: http://127.0.0.1:9292/v1
+      apiKey: not-needed
+      temperature: 0
+      max_tokens: 2048
+  - id: openai:chat:nemotron-nano
+    label: nemotron-nano (vLLM)
+    config: *llama-swap
+
+# The judge for llm-rubric checks: a local model, because the subscriptions include no API access.
+defaultTest:
+  options:
+    provider:
+      id: openai:chat:nemotron-nano
+      config: *llama-swap
+
+prompts:
+  - "{{question}}"
+
+tests:
+  - description: Factual answer
+    vars:
+      question: What is the default port for HTTPS? Answer with the number only.
+    assert:
+      - type: contains
+        value: "443"
+
+  - description: Infrastructure code
+    vars:
+      question: Write a minimal Kubernetes Namespace manifest named demo. Output only the YAML, without code fences.
+    assert:
+      - type: icontains
+        value: "kind: Namespace"
+      - type: contains
+        value: "name: demo"
+
+  - description: Explanation judged by a local model
+    vars:
+      question: Explain in at most three sentences why secrets should not be committed to a Git repository.
+    assert:
+      - type: llm-rubric
+        value: Explains that secrets stay in the Git history and can leak to anyone with access, in at most three sentences.
