@@ -1,0 +1,27 @@
+# systemd user service for llama-swap.
+# Install from the root of this repository (see docs/llama-swap.md):
+#   mkdir -p ~/.config/llama-swap
+#   ln -s "$PWD/llama-swap/config.yaml" ~/.config/llama-swap/config.yaml
+#   systemctl --user link "$PWD/llama-swap/llama-swap.service"
+#   systemctl --user enable --now llama-swap
+# Keep it running without a login session: loginctl enable-linger "$USER"
+
+[Unit]
+Description=llama-swap: on-demand model switching for llama.cpp and vLLM
+Documentation=https://github.com/mostlygeek/llama-swap
+
+[Service]
+# Only reachable from this machine. To serve other machines, override the address in a drop-in:
+#   systemctl --user edit llama-swap
+Environment=LLAMA_SWAP_LISTEN=127.0.0.1:9292
+ExecStart=%h/.local/bin/llama-swap --config %h/.config/llama-swap/config.yaml --listen ${LLAMA_SWAP_LISTEN} --watch-config
+Restart=on-failure
+RestartSec=5
+
+# Send SIGTERM to llama-swap only, so it can stop its models itself, including
+# 'docker stop' for vLLM containers, which can take a while.
+KillMode=mixed
+TimeoutStopSec=180
+
+[Install]
+WantedBy=default.target

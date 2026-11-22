@@ -1,0 +1,38 @@
+# llama-swap configuration for the DGX Spark (GB10, 128 GB unified memory).
+# Docs: https://github.com/mostlygeek/llama-swap/blob/main/docs/config.example.yaml
+#
+# Runtimes:
+#   - GGUF models run with llama.cpp built from source (see docs/llama-cpp.md).
+#   - Safetensors models run with eugr's spark-vllm-docker recipes.
+# Only one model runs at a time: requesting another model stops the current one.
+
+# vLLM recipes can take several minutes to load a model and compile.
+healthCheckTimeout: 1200
+logLevel: info
+startPort: 10001
+
+macros:
+  llama-server: ${env.HOME}/data/github/ggml-org/llama.cpp/build-gpu/bin/llama-server
+  gguf-dir: /mnt/ai-data/models
+  recipes: ${env.HOME}/data/github/eugr/spark-vllm-docker/run-recipe.py
+
+models:
+  # ---- GGUF models with llama.cpp ----
+  llama3-8b:
+    name: Llama 3 8B Instruct (Q4_K_M, llama.cpp)
+    cmd: |
+      ${llama-server} --port ${PORT} --host 127.0.0.1
+      -m ${gguf-dir}/bartowski/Meta-Llama-3-8B-Instruct-GGUF/Meta-Llama-3-8B-Instruct-Q4_K_M.gguf
+      -ngl 999 -c 8192
+
+  # ---- Safetensors models with spark-vllm-docker recipes ----
+  # The recipe starts a container with a fixed name; cmdStop stops it.
+  # useModelName: vLLM only answers to the Hugging Face repo ID.
+  nemotron-nano:
+    name: Nemotron 3 Nano 30B A3B (NVFP4, vLLM)
+    cmd: |
+      python3 ${recipes} nemotron-3-nano-nvfp4 --solo
+      --name llama-swap-nemotron-nano --port ${PORT}
+    cmdStop: docker stop llama-swap-nemotron-nano
+    useModelName: nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4
+    checkEndpoint: /health
