@@ -1,0 +1,183 @@
+#!/usr/bin/env bash
+# models: find, download, run and move LLM models across the internal and external disk.
+#
+# Hugging Face models live in one of two HF caches, selected with HF_HOME:
+#   internal  ~/.cache/huggingface       main models, fastest loading
+#   external  /mnt/ai-data/huggingface   less-used and experimental models
+# Models outside an HF cache (type "local": --local-dir downloads, GGUFs, LM Studio)
+# are only listed, not managed; software finds them by path.
+set -euo pipefail
+
+INTERNAL_HF=${MODELS_INTERNAL_HF:-$HOME/.cache/huggingface}
+EXTERNAL_HF=${MODELS_EXTERNAL_HF:-/mnt/ai-data/huggingface}
+FILE_DIRS=${MODELS_FILE_DIRS:-$HOME/data/ai/models:/mnt/ai-data/models}
+
+usage() {
+  cat <<'EOF'
+Usage: models <command> [args]
+
+  ls                              list models on both disks (disk, type, size, name);
+                                  type hf = in an HF cache, local = plain folder
+  where <repo>                    print the disk holding <repo>: internal or external
+  env <repo>                      print 'export HF_HOME=...' for <repo>; use with eval
+  get <repo> [--external] [...]   hf download into the internal (default) or external cache;
+                                  extra arguments go to 'hf download'
+  run <repo> -- <command...>      run <command> with HF_HOME set to the cache holding <repo>
+  mv <repo> internal|external     move <repo> to the other cache: copy, verify, then delete
+                                  the original; stop anything using the model first
+
+<repo> is a Hugging Face repo ID, such as Qwen/Qwen3-Coder-Next-FP8.
+Override paths with MODELS_INTERNAL_HF, MODELS_EXTERNAL_HF and MODELS_FILE_DIRS.
+EOF
+}
+
+die() { echo "models: $*" >&2; exit 1; }
+
+hf_home() {
+  case "$1" in
+    internal) echo "$INTERNAL_HF" ;;
+    external)
+      # The directory lives on the SSD, so it is missing when the SSD is not mounted.
+      [ -d "$EXTERNAL_HF" ] || die "$EXTERNAL_HF not found; is the external disk mounted?"
+      echo "$EXTERNAL_HF" ;;
+    *) die "unknown disk '$1'; use internal or external" ;;
+  esac
+}
+
+repo_dir() { echo "$1/hub/models--${2//\//--}"; }   # Qwen/X -> <cache>/hub/models--Qwen--X
+
+check_repo() { [[ "${1:-}" == */* ]] || die "expected a repo ID like org/name, got '${1:-}'"; }
+
+# Print every disk that holds <repo>, one per line.
+locate() {
+  [ -d "$(repo_dir "$INTERNAL_HF" "$1")" ] && echo internal
+  [ -d "$EXTERNAL_HF" ] && [ -d "$(repo_dir "$EXTERNAL_HF" "$1")" ] && echo external
+  return 0
+}
+
+# Print the single disk to use for <repo>; prefer internal if it is on both.
+pick() {
+  local found; found=$(locate "$1")
+  [ -n "$found" ] || die "$1 is not downloaded; use: models get $1"
+  if [ "$(wc -l <<<"$found")" -gt 1 ]; then
+    echo "models: $1 is on both disks; using internal" >&2
+    echo internal
+  else
+    echo "$found"
+  fi
+}
+
+cmd_ls() {
+  local disk cache dir name
+  printf '%-9s %-5s %6s  %s\n' DISK TYPE SIZE NAME
+  for disk in internal external; do
+    cache=$INTERNAL_HF; [ "$disk" = external ] && cache=$EXTERNAL_HF
+    for dir in "$cache"/hub/models--*/; do
+      [ -d "$dir" ] || continue
+      name=${dir%/}; name=${name##*/models--}; name=${name/--//}
+      printf '%-9s %-5s %6s  %s\n' "$disk" hf "$(du -sh "$dir" 2>/dev/null | cut -f1)" "$name"
+    done
+  done
+  local root
+  IFS=: read -ra roots <<<"$FILE_DIRS"
+  for root in "${roots[@]}"; do
+    case "$root" in "$HOME"/*) disk=internal ;; /mnt/ai-data/*) disk=external ;; *) disk=other ;; esac
+    for dir in "$root"/*/*/; do
+      [ -d "$dir" ] || continue
+      name=${dir%/}; name=${name#"$root"/}
+      printf '%-9s %-5s %6s  %s\n' "$disk" local "$(du -sh "$dir" 2>/dev/null | cut -f1)" "$root/$name"
+    done
+  done
+}
+
+cmd_where() {
+  check_repo "${1:-}"
+  local found; found=$(locate "$1")
+  [ -n "$found" ] || die "$1 is not downloaded"
+  echo "$found"
+}
+
+cmd_env() {
+  check_repo "${1:-}"
+  local disk home
+  disk=$(pick "$1")
+  home=$(hf_home "$disk")
+  echo "export HF_HOME=$home"
+}
+
+cmd_get() {
+  check_repo "${1:-}"
+  local repo=$1 disk=internal; shift
+  local args=()
+  for a in "$@"; do
+    if [ "$a" = --external ]; then disk=external; else args+=("$a"); fi
+  done
+  local other; other=$(locate "$repo" | grep -vx "$disk" || true)
+  [ -z "$other" ] || die "$repo is already on the $other disk; use 'models mv' to move it"
+  local home; home=$(hf_home "$disk")
+  echo "models: downloading $repo to $disk ($home)" >&2
+  # ~/.local/bin is only on PATH in interactive shells.
+  local hf; hf=$(command -v hf || echo "$HOME/.local/bin/hf")
+  [ -x "$hf" ] || die "hf CLI not found; install huggingface_hub"
+  HF_HOME=$home "$hf" download "$repo" "${args[@]}"
+}
+
+cmd_run() {
+  check_repo "${1:-}"
+  local repo=$1; shift
+  [ "${1:-}" = -- ] && shift
+  [ $# -gt 0 ] || die "usage: models run <repo> -- <command...>"
+  local disk home
+  disk=$(pick "$repo")
+  home=$(hf_home "$disk")
+  echo "models: HF_HOME=$home" >&2
+  HF_HOME=$home exec "$@"
+}
+
+cmd_mv() {
+  check_repo "${1:-}"
+  local repo=$1 to=${2:-}
+  [ "$to" = internal ] || [ "$to" = external ] || die "usage: models mv <repo> internal|external"
+  local found; found=$(locate "$repo")
+  [ -n "$found" ] || die "$repo is not downloaded"
+  [ "$(wc -l <<<"$found")" -eq 1 ] || die "$repo is on both disks; delete one copy by hand first"
+  [ "$found" != "$to" ] || die "$repo is already on the $to disk"
+
+  local src dst
+  src=$(repo_dir "$(hf_home "$found")" "$repo")
+  dst=$(repo_dir "$(hf_home "$to")" "$repo")
+
+  # Check up front that the original can be deleted; containers download as root.
+  if [ -n "$(find "$src" ! -user "$(id -un)" -print -quit)" ]; then
+    die "$src contains files not owned by you; first run: sudo chown -R $(id -un): $src"
+  fi
+  local need avail
+  need=$(du -sb "$src" | cut -f1)
+  mkdir -p "$(dirname "$dst")"
+  avail=$(df --output=avail -B1 "$(dirname "$dst")" | tail -1)
+  [ "$need" -lt "$avail" ] || die "not enough space on $to: need $need bytes, $avail available"
+
+  echo "models: copying $repo from $found to $to ($(du -sh "$src" | cut -f1))" >&2
+  trap 'echo "models: failed; removing partial copy $dst" >&2; rm -rf "$dst"' ERR
+  rsync -a "$src/" "$dst/"
+
+  echo "models: verifying checksums" >&2
+  local diffs; diffs=$(rsync -anc --itemize-changes "$src/" "$dst/" | grep -v '^\.d' || true)
+  [ -z "$diffs" ] || { echo "$diffs" >&2; false; }
+  trap - ERR
+
+  rm -rf "$src" "$(dirname "$src")/.locks/models--${repo//\//--}"
+  echo "models: $repo is now on the $to disk" >&2
+}
+
+cmd=${1:-}; [ $# -gt 0 ] && shift
+case "$cmd" in
+  ls) cmd_ls ;;
+  where) cmd_where "$@" ;;
+  env) cmd_env "$@" ;;
+  get) cmd_get "$@" ;;
+  run) cmd_run "$@" ;;
+  mv) cmd_mv "$@" ;;
+  -h|--help|help|'') usage ;;
+  *) usage >&2; exit 1 ;;
+esac
